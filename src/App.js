@@ -9,6 +9,16 @@ import { Card3D } from './Card3D'
 import { PrizeSunburst } from './PrizeSunburst'
 import { GrailVaultsCard } from './GrailVaultsCard'
 
+// Wrapper that passes only known props to Canvas. Prevents build/instrumentation
+// (e.g. x-line-number, data-*) from reaching R3F/Three.js and causing errors.
+function SafeCanvas({ gl, camera, style, children }) {
+  return (
+    <Canvas gl={gl} camera={camera} style={style}>
+      {children}
+    </Canvas>
+  )
+}
+
 const CARD_APPEARANCE_START_BEFORE_END = 1.4
 const CARD_APPEARANCE_DURATION = 1.4
 
@@ -582,7 +592,7 @@ function CardAnimation({ cardImageUrl = '/card.png' }) {
             visibility: hide3DCard ? 'hidden' : 'visible',
           }}
         >
-          <Canvas
+          <SafeCanvas
             gl={{ localClippingEnabled: true }}
             camera={{
               position: [0, 0, 5],
@@ -611,7 +621,7 @@ function CardAnimation({ cardImageUrl = '/card.png' }) {
                 cardImageUrl={cardImageUrl}
               />
             </Suspense>
-          </Canvas>
+          </SafeCanvas>
         </div>
       )}
 
