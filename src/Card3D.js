@@ -3,6 +3,7 @@ import { useLoader, useThree } from '@react-three/fiber'
 import { Decal, useTexture } from '@react-three/drei'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader'
 import { useRef, useEffect, useMemo } from 'react'
+import { CleanR3FChildren } from './r3fInstrumentationStrip'
 
 // Card3D: project card image onto card.glb using Decal (front + back)
 export function Card3D({
@@ -520,8 +521,9 @@ export function Card3D({
   }
 
   return (
-    <group ref={groupRef} position={position} rotation={rotation} scale={0}>
-      {/* Before tear: render a full intact card */}
+    <CleanR3FChildren>
+      <group ref={groupRef} position={position} rotation={rotation} scale={0}>
+        {/* Before tear: render a full intact card */}
       {!isTearing && (
         <mesh
           ref={fullMeshRef}
@@ -663,6 +665,7 @@ export function Card3D({
           </group>
         </>
       )}
-    </group>
+      </group>
+    </CleanR3FChildren>
   )
 }

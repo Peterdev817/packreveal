@@ -8,13 +8,13 @@ import { HomePage } from './HomePage'
 import { Card3D } from './Card3D'
 import { PrizeSunburst } from './PrizeSunburst'
 import { GrailVaultsCard } from './GrailVaultsCard'
+import { CleanR3FChildren } from './r3fInstrumentationStrip'
 
-// Wrapper that passes only known props to Canvas. Prevents build/instrumentation
-// (e.g. x-line-number, data-*) from reaching R3F/Three.js and causing errors.
+// Wrapper that passes only known props to Canvas and strips instrumentation from children.
 function SafeCanvas({ gl, camera, style, children }) {
   return (
     <Canvas gl={gl} camera={camera} style={style}>
-      {children}
+      <CleanR3FChildren>{children}</CleanR3FChildren>
     </Canvas>
   )
 }
