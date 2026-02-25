@@ -1,6 +1,6 @@
 import './styles.css'
 
-const CATEGORIES = [
+export const CATEGORIES = [
   { id: 'baseball', label: 'Baseball', icon: '⚾' },
   { id: 'football', label: 'Football', icon: '🏈' },
   { id: 'basketball', label: 'Basketball', icon: '🏀' },
@@ -8,7 +8,7 @@ const CATEGORIES = [
   { id: 'variety', label: 'Variety', icon: '🎁' },
 ]
 
-const TIERS = [
+export const TIERS = [
   { id: 'bronze', label: 'Bronze', price: 25 },
   { id: 'silver', label: 'Silver', price: 50 },
   { id: 'gold', label: 'Gold', price: 100 },
@@ -44,9 +44,6 @@ export function HomePage({
               alt={packName}
               className="home-product-image"
             />
-            <div className="home-product-logo" aria-hidden="true">
-              <img src="/logo-wrapped.png" alt="" />
-            </div>
           </div>
         </section>
 

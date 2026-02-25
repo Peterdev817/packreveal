@@ -2,18 +2,27 @@ import { useRef, useEffect, useState, Suspense } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { OrbitControls, Environment } from '@react-three/drei'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader'
+import { createGLTFLoader } from './gltfLoaderWithDraco'
 import './styles.css'
 import { HomePage } from './HomePage'
+import { CATEGORIES, TIERS } from './HomePage'
 import { Card3D } from './Card3D'
+import { composeCardImage } from './composeCardImage'
 import { PrizeSunburst } from './PrizeSunburst'
 import { GrailVaultsCard } from './GrailVaultsCard'
 import { CleanR3FChildren } from './r3fInstrumentationStrip'
 
 // Wrapper that passes only known props to Canvas and strips instrumentation from children.
-function SafeCanvas({ gl, camera, style, children }) {
+function SafeCanvas({ gl, camera, style, children, onCreated }) {
+  const handleCreated = (state) => {
+    if (state.gl) {
+      if (state.gl.outputColorSpace !== undefined) state.gl.outputColorSpace = THREE.SRGBColorSpace
+      if (state.gl.toneMapping !== undefined) state.gl.toneMapping = THREE.NoToneMapping
+    }
+    onCreated?.(state)
+  }
   return (
-    <Canvas gl={gl} camera={camera} style={style}>
+    <Canvas gl={gl} camera={camera} style={style} onCreated={handleCreated}>
       <CleanR3FChildren>{children}</CleanR3FChildren>
     </Canvas>
   )
@@ -22,27 +31,29 @@ function SafeCanvas({ gl, camera, style, children }) {
 const CARD_APPEARANCE_START_BEFORE_END = 1.4
 const CARD_APPEARANCE_DURATION = 1.4
 
-// Map category + tier to pack image; use card.png as fallback for packs without a dedicated image
-// Naming convention: pack-{category}-{tier}.webp (e.g. pack-football-bronze.webp)
-const PACK_IMAGES = {
-  'basketball-bronze': '/pack-basketball-bronze.webp',
-  'football-bronze': '/pack-football-bronze.webp',
-  'pokemon-bronze': '/pack-pokemon-bronze.webp',
-  'variety-bronze': '/pack-variety-bronze.webp',
-}
-
-function getProductImageUrl(category, tier) {
-  const key = `${category}-${tier}`
-  return PACK_IMAGES[key] ?? '/card.png'
-}
+const CARD_BASE = '/card.png'
 
 export const App = () => {
   const [showHomePage, setShowHomePage] = useState(true)
   const [selectedCategory, setSelectedCategory] = useState('baseball')
   const [selectedTier, setSelectedTier] = useState('bronze')
-  const [selectedCardImageUrl, setSelectedCardImageUrl] = useState('/card.png')
+  const [composedCardUrl, setComposedCardUrl] = useState(null)
+  const [selectedCardImageUrl, setSelectedCardImageUrl] = useState(CARD_BASE)
 
-  const productImageUrl = getProductImageUrl(selectedCategory, selectedTier)
+  const categoryLabel = CATEGORIES.find((c) => c.id === selectedCategory)?.label ?? selectedCategory
+  const tierLabel = TIERS.find((t) => t.id === selectedTier)?.label ?? selectedTier
+
+  useEffect(() => {
+    let cancelled = false
+    composeCardImage(CARD_BASE, categoryLabel, tierLabel, selectedTier).then((url) => {
+      if (!cancelled) setComposedCardUrl(url)
+    }).catch(() => {
+      if (!cancelled) setComposedCardUrl(CARD_BASE)
+    })
+    return () => { cancelled = true }
+  }, [selectedCategory, selectedTier])
+
+  const productImageUrl = composedCardUrl || CARD_BASE
 
   const handleBuyNow = () => {
     setSelectedCardImageUrl(productImageUrl)
@@ -91,16 +102,21 @@ function CardAnimation({ cardImageUrl = '/card.png' }) {
   const pokedexInnerRef = useRef(null)
   const pokedexInitializedRef = useRef(false)
   const pokedexAnimationCompleteRef = useRef(false)
+  const pokedexClickAnimatingRef = useRef(false)
   const [cardRotationComplete, setCardRotationComplete] = useState(false)
-  const [cardImageVisible, setCardImageVisible] = useState(false)
-  const [cardImageBlurRemoved, setCardImageBlurRemoved] = useState(false)
-  const [hide3DCard, setHide3DCard] = useState(false)
   const [showSunburst, setShowSunburst] = useState(false)
   const [videoDuration, setVideoDuration] = useState(0)
   const [videoCurrentTime, setVideoCurrentTime] = useState(0)
   const [assetsReady, setAssetsReady] = useState(false)
-  const topPartRef = useRef(null)
-  const bottomPartRef = useRef(null)
+  const [cardSlideComplete, setCardSlideComplete] = useState(false)
+
+  // 1.5s after clicking the circle (tear starts), hide .outer-card so Pokédex can receive click/hover
+  const OUTER_CARD_HIDE_DELAY_MS = 3000
+  useEffect(() => {
+    if (!isTearing) return
+    const t = setTimeout(() => setCardSlideComplete(true), OUTER_CARD_HIDE_DELAY_MS)
+    return () => clearTimeout(t)
+  }, [isTearing])
 
   // Preload critical assets (card image + model); optional images must not block start on live server (404-safe)
   useEffect(() => {
@@ -116,7 +132,7 @@ function CardAnimation({ cardImageUrl = '/card.png' }) {
       loadImage(src).catch(() => null)
     const loadGlb = (src) =>
       new Promise((resolve, reject) => {
-        const loader = new GLTFLoader()
+        const loader = createGLTFLoader()
         loader.load(src, (gltf) => resolve(gltf), undefined, reject)
       })
     const critical = [
@@ -250,62 +266,38 @@ function CardAnimation({ cardImageUrl = '/card.png' }) {
   }, [videoDuration])
 
 
-  // Callback when 3D card rotation completes
+  // Callback when 3D card rotation completes — show circle to trigger 3D tear (no 2D card)
   const handleCardAppeared = () => {
     setCardRotationComplete(true)
-    
-    // Start fading out 3D card and fading in 2D card simultaneously for seamless transition
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        // Start both transitions at the same time
-        // Card image starts visible with 5px blur, then blur is removed
-        setCardImageVisible(true)
-        setHide3DCard(true)
-        
-        // Remove blur after a tiny delay so it transitions from 5px to 0px smoothly
-        requestAnimationFrame(() => {
-          setCardImageBlurRemoved(true)
-        })
-      })
-    })
   }
 
-  // Appearing animation is now handled by Card3D component
-
-  // Handle tear trigger (for 2D card image)
+  // Handle tear trigger: start 3D card tear animation (Blender/model animation in Card3D)
   const handleTear = () => {
     if (isTearing) return
-    
     setIsTearing(true)
-    const container = containerRef.current
-    const topPart = topPartRef.current
 
-    if (!container || !topPart) return
-
-    // Start tearing animation for top part
-    topPart.classList.add('tearing')
-    
-    // Change z-index to drop behind card at 50% of animation (500ms) when scaling starts
-    setTimeout(() => {
-      topPart.style.zIndex = '0'
-    }, 500)
-
-    // After 1 second from circle press, rotate the Pokemon image
+    // After 1.5s from circle press, rotate the Pokemon image
     setTimeout(() => {
       setHasIntroSpinPlayed(true)
     }, 1500)
 
-    // After tear animation finishes (1 second), slide the whole card down and fade in Pokédex
+    // After 3D tear animation (1s), slide the card down and reveal Pokédex
     setTimeout(() => {
       setIsSliding(true)
     }, 1000)
   }
 
+  const POKEDEX_FLIP_DURATION_MS = 500
   const handlePokedexClick = () => {
+    pokedexClickAnimatingRef.current = true
     setIsPokedexFlipped(prev => !prev)
+    setTimeout(() => {
+      pokedexClickAnimatingRef.current = false
+    }, POKEDEX_FLIP_DURATION_MS)
   }
 
   const handlePokedexMouseMove = (event) => {
+    if (pokedexClickAnimatingRef.current) return
     const node = pokedexRef.current
     if (!node) return
 
@@ -325,12 +317,13 @@ function CardAnimation({ cardImageUrl = '/card.png' }) {
   }
 
   const handlePokedexMouseLeave = () => {
+    if (pokedexClickAnimatingRef.current) return
     setPokedexTilt({ rotX: 0, rotY: 0 })
   }
 
-  // Set Poke image initial state (opacity 1, scale 0.6) when card image becomes visible
+  // Set Poke image initial state (opacity 1, scale 0.6) when rotation complete and circle is shown
   useEffect(() => {
-    if (!cardImageVisible || !pokedexRef.current || !pokedexInnerRef.current) return
+    if (!cardRotationComplete || !pokedexRef.current || !pokedexInnerRef.current) return
     if (pokedexInitializedRef.current) return // Only run once
     
     pokedexInitializedRef.current = true
@@ -348,7 +341,7 @@ function CardAnimation({ cardImageUrl = '/card.png' }) {
     const initialTransform = `rotateY(${pokedexBaseRotationY + pokedexTilt.rotY}deg) rotateX(${pokedexTilt.rotX}deg)`
     pokedexInnerElement.style.transform = initialTransform
     pokedexInnerElement.style.transition = 'none'
-  }, [cardImageVisible, isPokedexFlipped, pokedexTilt])
+  }, [cardRotationComplete, isPokedexFlipped, pokedexTilt])
 
   // Pokédex animation: rotate and enlarge 3 seconds after tear effect begins
   useEffect(() => {
@@ -364,7 +357,7 @@ function CardAnimation({ cardImageUrl = '/card.png' }) {
       const pokedexInnerElement = pokedexInnerRef.current
       if (!pokedexElement || !pokedexInnerElement) return
       
-      const duration = 1500 // 1.5 seconds
+      const duration = 1000 // 1 second
       
       // Calculate initial rotation (current pokedexTransform without the 360°)
       const pokedexBaseRotationY = isPokedexFlipped ? 180 : 0
@@ -438,9 +431,6 @@ function CardAnimation({ cardImageUrl = '/card.png' }) {
   const cardWidth = cardHeight * aspectRatio
   // Tear cut line: 20px down from the top
   const cutPixelsFromTop = 20
-  const cutLineY = cutPixelsFromTop
-  const topHeight = cardHeight * 0.05 // 5% top part (20px out of 400px)
-  const bottomHeight = cardHeight * 0.95 // 95% bottom part
 
   // Make the Pokédex slightly smaller than the original card (about 20px narrower)
   const pokedexWidth = cardWidth - 20
@@ -545,7 +535,7 @@ function CardAnimation({ cardImageUrl = '/card.png' }) {
             style={{
               width: `${pokedexWidth}px`,
               height: `${pokedexHeight}px`,
-              opacity: cardImageVisible ? 1 : 0, // Set to 1 when card image is visible
+              opacity: cardRotationComplete ? 1 : 0, // Visible when circle is shown (rotation complete)
             }}
           >
             <div
@@ -575,21 +565,19 @@ function CardAnimation({ cardImageUrl = '/card.png' }) {
           </div>
         </div>
 
-      {/* 3D Card Model - shown until rotation completes, fades out smoothly as 2D card fades in */}
+      {/* 3D Card Model - stays visible; tear is done by 3D model. Hidden (display: none) after slide so Pokédex gets click/hover. */}
       {showCard && (
         <div 
           className="outer-card"
           style={{ 
-            zIndex: hide3DCard ? 1 : 2, // Move behind 2D card when fading out
+            zIndex: 2,
             position: 'absolute',
             top: 0,
             left: 0,
             width: '100%',
             height: '100%',
-            opacity: hide3DCard ? 0 : 1,
-            transition: hide3DCard ? 'opacity 0.4s ease-in-out' : 'none',
-            pointerEvents: hide3DCard ? 'none' : 'auto',
-            visibility: hide3DCard ? 'hidden' : 'visible',
+            pointerEvents: 'none',
+            display: cardSlideComplete ? 'none' : undefined,
           }}
         >
           <SafeCanvas
@@ -609,13 +597,13 @@ function CardAnimation({ cardImageUrl = '/card.png' }) {
             
             <Suspense fallback={null}>
               <Card3D
-                scale={1.5}
+                scale={1.8}
                 position={[0, 0, 0]}
                 rotation={[0, 0, 0]}
                 cutPixelsFromTop={cutPixelsFromTop}
                 cardHeightPx={cardHeight}
-                isTearing={false}
-                isSliding={false}
+                isTearing={isTearing}
+                isSliding={isSliding}
                 onAppear={handleCardAppeared}
                 onCutPositionUpdate={setCutScreenPosition}
                 cardImageUrl={cardImageUrl}
@@ -625,144 +613,35 @@ function CardAnimation({ cardImageUrl = '/card.png' }) {
         </div>
       )}
 
-      {/* 2D Card Image - always rendered when showCard is true, fades in smoothly when rotation completes */}
-      {showCard && (
-        <div 
-          className={`outer-card ${isSliding ? 'slide-out' : ''}`} 
-          style={{ 
-            zIndex: hide3DCard ? 2 : 1, // Behind 3D card until it fades out, then on top
+      {/* Clickable circle overlay on 3D card - triggers 3D tear when rotation complete */}
+      {showCard && cardRotationComplete && !isTearing && (
+        <div
+          className="tear-trigger-overlay"
+          style={{
             position: 'absolute',
             top: 0,
             left: 0,
             width: '100%',
             height: '100%',
-            transformStyle: 'preserve-3d',
-            perspective: '1400px',
-            opacity: cardImageVisible ? 1 : 0,
-            filter: cardImageVisible ? (cardImageBlurRemoved ? 'blur(0px)' : 'blur(5px)') : 'blur(0px)',
-            transition: 'none',
-            pointerEvents: cardImageVisible ? 'auto' : 'none',
+            zIndex: 3,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            pointerEvents: 'auto',
           }}
         >
-          <div 
-            className="card-3d-wrapper"
+          <div
+            className="tear-trigger"
+            onClick={handleTear}
             style={{
-              position: 'relative',
-              width: '100%',
-              height: '100%',
-              transformStyle: 'preserve-3d',
-              transform: 'scale(0.6)',
-              transformOrigin: 'center center',
+              position: 'absolute',
+              left: '50%',
+              top: '50%',
+              transform: 'translate(-50%, -50%)',
+              cursor: 'pointer',
             }}
           >
-            {/* Front face - entire card */}
-            <div
-              className="card-face card-face-front"
-              style={{
-                position: 'absolute',
-                width: '100%',
-                height: '100%',
-                backfaceVisibility: 'hidden',
-                WebkitBackfaceVisibility: 'hidden',
-              }}
-            >
-              {/* Centered logo overlay */}
-              <div className="card-logo-overlay" aria-hidden="true">
-                <img src="/logo-wrapped.png" alt="" />
-              </div>
-              {/* Bottom part (95%) */}
-              <div
-                ref={bottomPartRef}
-                className="card-part card-bottom"
-                style={{
-                  position: 'absolute',
-                  top: `${cardHeight - bottomHeight}px`,
-                  left: 0,
-                  width: `${cardWidth}px`,
-                  height: `${bottomHeight}px`,
-                  backgroundImage: `url(${cardImageUrl})`,
-                  backgroundSize: `${cardWidth}px ${cardHeight}px`,
-                  backgroundPosition: `0 ${-topHeight}px`,
-                }}
-              />
-              
-              {/* Top part (5%) - positioned above bottom part with tear effect */}
-              <div
-                ref={topPartRef}
-                className="card-part-wrapper"
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: `${cardWidth}px`,
-                  height: `${topHeight}px`,
-                  perspective: '1000px',
-                }}
-              >
-                <div className="card-part-inner">
-                  {/* Front side (original image) */}
-                  <div
-                    className="card-part card-top card-front"
-                    style={{
-                      width: `${cardWidth}px`,
-                      height: `${topHeight}px`,
-                      backgroundImage: `url(${cardImageUrl})`,
-                      backgroundSize: `${cardWidth}px ${cardHeight}px`,
-                      backgroundPosition: '0 0',
-                    }}
-                  />
-                  {/* Back side (metallic foil) */}
-                  <div
-                    className="card-part card-top card-back"
-                    style={{
-                      width: `${cardWidth}px`,
-                      height: `${topHeight}px`,
-                    }}
-                  />
-                </div>
-              </div>
-
-              {/* Sparkling circle on logo (center of card) - only show after rotation completes */}
-              {cardRotationComplete && !isTearing && (
-                <div
-                  className="tear-trigger"
-                  onClick={handleTear}
-                  style={{
-                    position: 'absolute',
-                    left: '50%',
-                    top: '50%',
-                    transform: 'translate(-50%, -50%)',
-                    cursor: 'pointer',
-                    zIndex: 10,
-                  }}
-                >
-                  <div className="sparkle-circle"></div>
-                </div>
-              )}
-            </div>
-
-            {/* Back face - same card image */}
-            <div
-              className="card-face card-face-back"
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                width: `${cardWidth}px`,
-                height: `${cardHeight}px`,
-                backgroundImage: `url(${cardImageUrl})`,
-                backgroundSize: `${cardWidth}px ${cardHeight}px`,
-                backgroundPosition: 'center center',
-                backfaceVisibility: 'hidden',
-                WebkitBackfaceVisibility: 'hidden',
-                borderRadius: '12px',
-                transform: 'rotateY(180deg)',
-              }}
-            >
-              <div className="card-logo-overlay" aria-hidden="true">
-                <img src="/logo-wrapped.png" alt="" />
-              </div>
-            </div>
+            <div className="sparkle-circle"></div>
           </div>
         </div>
       )}
