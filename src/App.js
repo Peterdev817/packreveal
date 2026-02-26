@@ -33,6 +33,20 @@ const CARD_APPEARANCE_DURATION = 1.4
 
 const CARD_BASE = '/card.png'
 
+// Tier-specific card base images in public folder (card_bronze.png, card_gold.png, etc.)
+const TIER_CARD_BASES = {
+  bronze: '/card_bronze.png',
+  silver: '/card_silver.png',
+  gold: '/card_gold.png',
+  emerald: '/card_emerald.png',
+  platinum: '/card_platinum.png',
+  diamond: '/card_diamond.png',
+}
+
+function getTierCardBaseUrl(tierId) {
+  return (tierId && TIER_CARD_BASES[tierId]) ? TIER_CARD_BASES[tierId] : CARD_BASE
+}
+
 export const App = () => {
   const [showHomePage, setShowHomePage] = useState(true)
   const [selectedCategory, setSelectedCategory] = useState('baseball')
@@ -43,17 +57,19 @@ export const App = () => {
   const categoryLabel = CATEGORIES.find((c) => c.id === selectedCategory)?.label ?? selectedCategory
   const tierLabel = TIERS.find((t) => t.id === selectedTier)?.label ?? selectedTier
 
+  // Compose card image: tier-colored base + category/tier text overlay (keeps composedCardUrl and label usage)
+  const tierCardBaseUrl = getTierCardBaseUrl(selectedTier)
   useEffect(() => {
     let cancelled = false
-    composeCardImage(CARD_BASE, categoryLabel, tierLabel, selectedTier).then((url) => {
+    composeCardImage(tierCardBaseUrl, categoryLabel, tierLabel, selectedTier).then((url) => {
       if (!cancelled) setComposedCardUrl(url)
     }).catch(() => {
-      if (!cancelled) setComposedCardUrl(CARD_BASE)
+      if (!cancelled) setComposedCardUrl(tierCardBaseUrl)
     })
     return () => { cancelled = true }
-  }, [selectedCategory, selectedTier])
+  }, [selectedCategory, selectedTier, tierCardBaseUrl])
 
-  const productImageUrl = composedCardUrl || CARD_BASE
+  const productImageUrl = composedCardUrl || tierCardBaseUrl
 
   const handleBuyNow = () => {
     setSelectedCardImageUrl(productImageUrl)
@@ -110,8 +126,8 @@ function CardAnimation({ cardImageUrl = '/card.png' }) {
   const [assetsReady, setAssetsReady] = useState(false)
   const [cardSlideComplete, setCardSlideComplete] = useState(false)
 
-  // 1.5s after clicking the circle (tear starts), hide .outer-card so Pokédex can receive click/hover
-  const OUTER_CARD_HIDE_DELAY_MS = 3000
+  // Hide .outer-card after card disappearance animation (4s) so Pokédex can receive click/hover
+  const OUTER_CARD_HIDE_DELAY_MS = 4000
   useEffect(() => {
     if (!isTearing) return
     const t = setTimeout(() => setCardSlideComplete(true), OUTER_CARD_HIDE_DELAY_MS)
@@ -350,8 +366,8 @@ function CardAnimation({ cardImageUrl = '/card.png' }) {
     
     pokedexAppearStartedRef.current = true
     
-    // Wait 1.5 seconds after tear begins
-    const tearDelay = 1500
+    // Wait 2.5 seconds after tear begins (1s later than before)
+    const tearDelay = 3500
     const animationTimeout = setTimeout(() => {
       const pokedexElement = pokedexRef.current
       const pokedexInnerElement = pokedexInnerRef.current
@@ -602,6 +618,7 @@ function CardAnimation({ cardImageUrl = '/card.png' }) {
                 rotation={[0, 0, 0]}
                 cutPixelsFromTop={cutPixelsFromTop}
                 cardHeightPx={cardHeight}
+                pokedexHeightPx={pokedexHeight}
                 isTearing={isTearing}
                 isSliding={isSliding}
                 onAppear={handleCardAppeared}

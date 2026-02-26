@@ -13,6 +13,7 @@ export function Card3D({
   rotation = [0, 0, 0],
   cutPixelsFromTop = 20,
   cardHeightPx = 400,
+  pokedexHeightPx,
   isTearing = false,
   isSliding = false,
   onAppear,
@@ -82,6 +83,7 @@ export function Card3D({
         depthTest: true,
         toneMapped: false,
         fog: false,
+        transparent: true,
       })
       if (mat.map) mat.map.colorSpace = THREE.SRGBColorSpace
       meshes[0].material = mat
@@ -114,6 +116,7 @@ export function Card3D({
       depthTest: true,
       toneMapped: false,
       fog: false,
+      transparent: true,
     })
     bottomMesh.material = new THREE.MeshBasicMaterial({
       map: texBottom,
@@ -123,6 +126,7 @@ export function Card3D({
       depthTest: true,
       toneMapped: false,
       fog: false,
+      transparent: true,
     })
     if (meshes.length > 2) {
       for (let i = 2; i < meshes.length; i++) {
@@ -134,6 +138,7 @@ export function Card3D({
         meshes[i].material = new THREE.MeshBasicMaterial({
           map: tex,
           color: 0xffffff,
+          transparent: true,
           side: THREE.DoubleSide,
           depthWrite: true,
           depthTest: true,
@@ -197,27 +202,56 @@ export function Card3D({
     if (!isTearing) tearStartedRef.current = false
   }, [isTearing])
 
-  // Slide-out: move whole card down off the bottom of the screen (no fade/mask)
-  const SLIDE_DISTANCE = 30
-  const SLIDE_DURATION = 4000
+  // Slide-out: 4 seconds total — phase1 drop, phase2 quick drop, then fade
+  const TOTAL_SLIDE_MS = 4000
+  const PHASE1_MS = 2000  // 1s: drop 1/3 poke height
+  const PHASE2_MS = 1000  // 1s: quick drop
+  const FADE_MS = TOTAL_SLIDE_MS - PHASE1_MS - PHASE2_MS  // 2s fade
+
+  const refSlideUnits = 30
+  const pokedexH = pokedexHeightPx != null ? pokedexHeightPx : cardHeightPx
+  const pokedexHeightWorld = refSlideUnits * (pokedexH / cardHeightPx)
+  const phase1Distance = (1 / 40) * pokedexHeightWorld
+  const totalSlideDistance = 1 * pokedexHeightWorld
+  const phase2Distance = totalSlideDistance - phase1Distance
+
   useEffect(() => {
-    if (!groupRef.current || !isSliding) return
+    if (!groupRef.current || !isSliding || !sceneClone) return
     if (!isTearing) return
 
-    const duration = SLIDE_DURATION
     const startTime = Date.now()
     const startY = groupRef.current.position.y
 
     const animate = () => {
-      if (!groupRef.current) return
+      if (!groupRef.current || !sceneClone) return
       const elapsed = Date.now() - startTime
-      const progress = Math.min(elapsed / duration, 1)
-      const eased = 1 - Math.pow(1 - progress, 3)
-      groupRef.current.position.y = startY - eased * SLIDE_DISTANCE
-      if (progress < 1) requestAnimationFrame(animate)
+
+      if (elapsed < PHASE1_MS) {
+        // Phase 1 (1s): drop 1/3 of poke image height
+        const t = Math.min(elapsed / PHASE1_MS, 1)
+        const eased = 1 - Math.pow(1 - t, 2)
+        groupRef.current.position.y = startY - eased * phase1Distance
+      } else if (elapsed < PHASE1_MS + PHASE2_MS) {
+        // Phase 2 (1s): quick drop the rest of the way
+        const t = Math.min((elapsed - PHASE1_MS) / PHASE2_MS, 1)
+        const progress = t
+        groupRef.current.position.y = startY - phase1Distance - progress * phase2Distance
+      } else {
+        groupRef.current.position.y = startY - totalSlideDistance
+        const fadeElapsed = elapsed - PHASE1_MS - PHASE2_MS
+        const fadeProgress = Math.min(fadeElapsed / FADE_MS, 1)
+        const opacity = 1 - fadeProgress
+        sceneClone.traverse((child) => {
+          if (child.isMesh && child.material) {
+            child.material.transparent = true
+            child.material.opacity = opacity
+          }
+        })
+      }
+      if (elapsed < TOTAL_SLIDE_MS) requestAnimationFrame(animate)
     }
     requestAnimationFrame(animate)
-  }, [isSliding, isTearing, sceneClone])
+  }, [isSliding, isTearing, sceneClone, phase1Distance, phase2Distance, totalSlideDistance])
 
   // Drive animation mixer every frame
   useFrame((_, delta) => {
