@@ -14,6 +14,7 @@ import { SafeCanvas } from './SafeCanvas'
 
 const CARD_APPEARANCE_START_BEFORE_END = 1.4
 const CARD_APPEARANCE_DURATION = 1.4
+const VIDEO_START_OFFSET_SEC = 0.6
 
 const CARD_BASE = '/card.png'
 
@@ -118,6 +119,7 @@ function CardAnimation({ cardImageUrl = '/card.png', cardModelKey = 'default' })
   const [videoCurrentTime, setVideoCurrentTime] = useState(0)
   const [assetsReady, setAssetsReady] = useState(false)
   const [cardSlideComplete, setCardSlideComplete] = useState(false)
+  const [videoPrimed, setVideoPrimed] = useState(false)
 
   // Hide .outer-card after card disappearance animation (4s) so Pokédex can receive click/hover
   const OUTER_CARD_HIDE_DELAY_MS = 4000
@@ -214,22 +216,48 @@ function CardAnimation({ cardImageUrl = '/card.png', cardModelKey = 'default' })
     video.setAttribute('webkit-playsinline', '')
     video.playbackRate = 1.2
 
-    const playVideo = () => {
-      video.play().catch((error) => {
-        console.warn('Video autoplay failed:', error)
-        const handleUserInteraction = () => {
-          video.play().then(() => {
-            document.removeEventListener('click', handleUserInteraction, true)
-            document.removeEventListener('touchstart', handleUserInteraction, true)
-            document.removeEventListener('mousedown', handleUserInteraction, true)
-            window.removeEventListener('focus', handleUserInteraction)
-          }).catch(() => {})
+    const seekToStartOffset = () => {
+      if (Number.isFinite(video.duration) && video.duration > VIDEO_START_OFFSET_SEC) {
+        video.currentTime = VIDEO_START_OFFSET_SEC
+      }
+    }
+
+    const primeAndPlay = () => {
+      const playNow = () => {
+        setVideoPrimed(true)
+        video.play().catch((error) => {
+          console.warn('Video autoplay failed:', error)
+          const handleUserInteraction = () => {
+            seekToStartOffset()
+            setVideoPrimed(true)
+            video.play().then(() => {
+              document.removeEventListener('click', handleUserInteraction, true)
+              document.removeEventListener('touchstart', handleUserInteraction, true)
+              document.removeEventListener('mousedown', handleUserInteraction, true)
+              window.removeEventListener('focus', handleUserInteraction)
+            }).catch(() => {})
+          }
+          document.addEventListener('click', handleUserInteraction, true)
+          document.addEventListener('touchstart', handleUserInteraction, true)
+          document.addEventListener('mousedown', handleUserInteraction, true)
+          window.addEventListener('focus', handleUserInteraction)
+        })
+      }
+
+      if (Number.isFinite(video.duration) && video.duration > VIDEO_START_OFFSET_SEC) {
+        const onSeeked = () => {
+          video.removeEventListener('seeked', onSeeked)
+          playNow()
         }
-        document.addEventListener('click', handleUserInteraction, true)
-        document.addEventListener('touchstart', handleUserInteraction, true)
-        document.addEventListener('mousedown', handleUserInteraction, true)
-        window.addEventListener('focus', handleUserInteraction)
-      })
+        video.addEventListener('seeked', onSeeked, { once: true })
+        seekToStartOffset()
+      } else {
+        playNow()
+      }
+    }
+
+    const playVideo = () => {
+      primeAndPlay()
     }
 
     if (video.readyState >= 2) {
@@ -249,6 +277,7 @@ function CardAnimation({ cardImageUrl = '/card.png', cardModelKey = 'default' })
     if (Number.isFinite(video.duration)) setVideoDuration(video.duration)
     const onMeta = () => {
       if (Number.isFinite(video.duration)) setVideoDuration(video.duration)
+      seekToStartOffset()
     }
     video.addEventListener('loadedmetadata', onMeta)
 
@@ -482,6 +511,7 @@ function CardAnimation({ cardImageUrl = '/card.png', cardModelKey = 'default' })
           height: '100vh',
           objectFit: 'cover',
           zIndex: showCard ? 0 : 10,
+          opacity: videoPrimed ? 1 : 0,
         }}
       />
 
