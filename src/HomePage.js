@@ -1,3 +1,6 @@
+import { Suspense } from 'react'
+import { SafeCanvas } from './SafeCanvas'
+import { Card3DPreview } from './Card3DPreview'
 import './styles.css'
 
 export const CATEGORIES = [
@@ -36,14 +39,17 @@ export function HomePage({
     <div className="home-page">
       <div className="home-page-matrix-bg" aria-hidden="true" />
       <div className="home-page-content">
-        {/* Left: Product image */}
+        {/* Left: 3D card preview (draggable, same image front and back) */}
         <section className="home-section home-product-display">
-          <div className="home-product-image-wrap">
-            <img
-              src={productImageUrl}
-              alt={packName}
-              className="home-product-image"
-            />
+          <div className="home-product-image-wrap home-product-preview-3d">
+            <Suspense fallback={<div className="home-product-preview-fallback">Loading…</div>}>
+              <SafeCanvas
+                camera={{ position: [0, 0, 6], fov: 45 }}
+                style={{ width: '100%', height: '320px', display: 'block' }}
+              >
+                <Card3DPreview cardImageUrl={productImageUrl} />
+              </SafeCanvas>
+            </Suspense>
           </div>
         </section>
 

@@ -693,6 +693,20 @@ body {
   vertical-align: top;
 }
 
+.home-product-preview-3d {
+  min-height: 320px;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.home-product-preview-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 320px;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.9rem;
+}
+
 .home-product-logo {
   position: absolute;
   inset: 0;

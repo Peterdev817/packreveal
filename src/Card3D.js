@@ -5,6 +5,57 @@ import { useRef, useEffect, useMemo, useState } from 'react'
 import { CleanR3FChildren } from './r3fInstrumentationStrip'
 
 const textureLoader = new THREE.TextureLoader()
+const TOP_IMAGE_RATIO = 0.06
+
+function createCardMaterial(texture) {
+  const mat = new THREE.MeshBasicMaterial({
+    map: texture,
+    color: 0xffffff,
+    side: THREE.DoubleSide,
+    depthWrite: true,
+    depthTest: true,
+    toneMapped: false,
+    fog: false,
+  })
+  if (mat.map) mat.map.colorSpace = THREE.SRGBColorSpace
+  // Two-side mapping based on local normals (model space),
+  // using mirrored U on the back side to keep text orientation readable.
+  mat.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+varying vec3 vLocalNormal;`
+      )
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+vLocalNormal = normalize(normal);`
+      )
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <common>',
+      `#include <common>
+varying vec3 vLocalNormal;`
+    )
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <map_fragment>',
+      `#ifdef USE_MAP
+        vec2 uv = vMapUv;
+        // Use threshold so border/angled faces don't flip unexpectedly.
+        bool isBackSide = (vLocalNormal.z < -0.5);
+        if (isBackSide) {
+          vec2 uvBack = vec2(1.0 - uv.x, uv.y);
+          vec4 sampledDiffuseColor = texture2D(map, uvBack);
+          diffuseColor *= sampledDiffuseColor;
+        } else {
+          vec4 sampledDiffuseColor = texture2D(map, uv);
+          diffuseColor *= sampledDiffuseColor;
+        }
+      #endif`
+    )
+  }
+  return mat
+}
 
 // Card3D: display card.glb with pack image on materials; play built-in tear animation when isTearing.
 export function Card3D({
@@ -43,19 +94,38 @@ export function Card3D({
   // Clone scene so we have our own instance to animate (mixer will drive this clone)
   const sceneClone = useMemo(() => (gltf.scene ? gltf.scene.clone(true) : null), [gltf])
 
-  // Apply pack image: top 5% of image to the upper mesh, remaining 95% to the lower mesh (split model)
-  const TOP_IMAGE_RATIO = 0.05
+  // Apply card image by replacing only materials (no geometry changes).
+  // Upper mesh gets top 20% of image; lower meshes get remaining 80%.
   useEffect(() => {
     if (!sceneClone || !cardTexture) return
     cardTexture.colorSpace = THREE.SRGBColorSpace
     const meshes = []
     sceneClone.traverse((child) => {
-      if (child.isMesh && child.geometry) meshes.push(child)
+      child.visible = true
+      if (!child.isMesh || !child.geometry) return
+      meshes.push(child)
     })
     if (meshes.length === 0) return
+
+    // Prepare split textures
+    const texTop = cardTexture.clone()
+    texTop.colorSpace = THREE.SRGBColorSpace
+    texTop.offset.set(0, 1 - TOP_IMAGE_RATIO)
+    texTop.repeat.set(1, TOP_IMAGE_RATIO)
+    texTop.wrapS = texTop.wrapT = THREE.ClampToEdgeWrapping
+    texTop.needsUpdate = true
+    const texBottom = cardTexture.clone()
+    texBottom.colorSpace = THREE.SRGBColorSpace
+    texBottom.offset.set(0, 0)
+    texBottom.repeat.set(1, 1 - TOP_IMAGE_RATIO)
+    texBottom.wrapS = texBottom.wrapT = THREE.ClampToEdgeWrapping
+    texBottom.needsUpdate = true
+
+    // Pick upper mesh by local geometry Y center (stable regardless of parent animation scale).
+    let upperMesh = null
+    let maxCenterY = -Infinity
     meshes.forEach((mesh) => {
       const geo = mesh.geometry
-      geo.deleteAttribute('color')
       if (!geo.attributes.uv && geo.attributes.position) {
         geo.computeBoundingBox()
         const bbox = geo.boundingBox
@@ -73,79 +143,35 @@ export function Card3D({
         }
         geo.setAttribute('uv', new THREE.BufferAttribute(uvArray, 2))
       }
-    })
-    if (meshes.length === 1) {
-      const mat = new THREE.MeshBasicMaterial({
-        map: cardTexture,
-        color: 0xffffff,
-        side: THREE.DoubleSide,
-        depthWrite: true,
-        depthTest: true,
-        toneMapped: false,
-        fog: false,
-        transparent: true,
-      })
-      if (mat.map) mat.map.colorSpace = THREE.SRGBColorSpace
-      meshes[0].material = mat
-      return
-    }
-    meshes.sort((a, b) => {
-      a.geometry.computeBoundingBox()
-      b.geometry.computeBoundingBox()
-      const ca = a.geometry.boundingBox.getCenter(new THREE.Vector3())
-      const cb = b.geometry.boundingBox.getCenter(new THREE.Vector3())
-      return cb.y - ca.y
-    })
-    const topMesh = meshes[0]
-    const bottomMesh = meshes[1]
-    const texTop = cardTexture.clone()
-    texTop.colorSpace = THREE.SRGBColorSpace
-    texTop.offset.set(0, 1 - TOP_IMAGE_RATIO)
-    texTop.repeat.set(1, TOP_IMAGE_RATIO)
-    texTop.wrapS = texTop.wrapT = THREE.ClampToEdgeWrapping
-    const texBottom = cardTexture.clone()
-    texBottom.colorSpace = THREE.SRGBColorSpace
-    texBottom.offset.set(0, 0)
-    texBottom.repeat.set(1, 1 - TOP_IMAGE_RATIO)
-    texBottom.wrapS = texBottom.wrapT = THREE.ClampToEdgeWrapping
-    topMesh.material = new THREE.MeshBasicMaterial({
-      map: texTop,
-      color: 0xffffff,
-      side: THREE.DoubleSide,
-      depthWrite: true,
-      depthTest: true,
-      toneMapped: false,
-      fog: false,
-      transparent: true,
-    })
-    bottomMesh.material = new THREE.MeshBasicMaterial({
-      map: texBottom,
-      color: 0xffffff,
-      side: THREE.DoubleSide,
-      depthWrite: true,
-      depthTest: true,
-      toneMapped: false,
-      fog: false,
-      transparent: true,
-    })
-    if (meshes.length > 2) {
-      for (let i = 2; i < meshes.length; i++) {
-        const tex = cardTexture.clone()
-        tex.colorSpace = THREE.SRGBColorSpace
-        tex.offset.set(0, 0)
-        tex.repeat.set(1, 1 - TOP_IMAGE_RATIO)
-        tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping
-        meshes[i].material = new THREE.MeshBasicMaterial({
-          map: tex,
-          color: 0xffffff,
-          transparent: true,
-          side: THREE.DoubleSide,
-          depthWrite: true,
-          depthTest: true,
-          toneMapped: false,
-          fog: false,
-        })
+      geo.computeBoundingBox()
+      const center = geo.boundingBox.getCenter(new THREE.Vector3())
+      if (center.y > maxCenterY) {
+        maxCenterY = center.y
+        upperMesh = mesh
       }
+    })
+
+    const applyMappedMaterials = () => {
+      meshes.forEach((mesh) => {
+        const tex = mesh === upperMesh ? texTop : texBottom
+        mesh.material = createCardMaterial(tex)
+        mesh.material.needsUpdate = true
+        if (mesh.geometry?.attributes?.uv) mesh.geometry.attributes.uv.needsUpdate = true
+        mesh.renderOrder = 0
+      })
+    }
+    // Apply immediately and once more over the next frames to avoid first-frame stale shader/texture state.
+    applyMappedMaterials()
+    let raf2 = 0
+    const raf1 = requestAnimationFrame(() => {
+      applyMappedMaterials()
+      raf2 = requestAnimationFrame(() => {
+        applyMappedMaterials()
+      })
+    })
+    return () => {
+      cancelAnimationFrame(raf1)
+      if (raf2) cancelAnimationFrame(raf2)
     }
   }, [sceneClone, cardTexture])
   const mixer = useMemo(() => {

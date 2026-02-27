@@ -10,23 +10,7 @@ import { Card3D } from './Card3D'
 import { composeCardImage } from './composeCardImage'
 import { PrizeSunburst } from './PrizeSunburst'
 import { GrailVaultsCard } from './GrailVaultsCard'
-import { CleanR3FChildren } from './r3fInstrumentationStrip'
-
-// Wrapper that passes only known props to Canvas and strips instrumentation from children.
-function SafeCanvas({ gl, camera, style, children, onCreated }) {
-  const handleCreated = (state) => {
-    if (state.gl) {
-      if (state.gl.outputColorSpace !== undefined) state.gl.outputColorSpace = THREE.SRGBColorSpace
-      if (state.gl.toneMapping !== undefined) state.gl.toneMapping = THREE.NoToneMapping
-    }
-    onCreated?.(state)
-  }
-  return (
-    <Canvas gl={gl} camera={camera} style={style} onCreated={handleCreated}>
-      <CleanR3FChildren>{children}</CleanR3FChildren>
-    </Canvas>
-  )
-}
+import { SafeCanvas } from './SafeCanvas'
 
 const CARD_APPEARANCE_START_BEFORE_END = 1.4
 const CARD_APPEARANCE_DURATION = 1.4
@@ -53,9 +37,11 @@ export const App = () => {
   const [selectedTier, setSelectedTier] = useState('bronze')
   const [composedCardUrl, setComposedCardUrl] = useState(null)
   const [selectedCardImageUrl, setSelectedCardImageUrl] = useState(CARD_BASE)
+  const [selectedModelKey, setSelectedModelKey] = useState('baseball-bronze')
 
   const categoryLabel = CATEGORIES.find((c) => c.id === selectedCategory)?.label ?? selectedCategory
   const tierLabel = TIERS.find((t) => t.id === selectedTier)?.label ?? selectedTier
+  const currentModelKey = `${selectedCategory}-${selectedTier}`
 
   // Compose card image: tier-colored base + category/tier text overlay (keeps composedCardUrl and label usage)
   const tierCardBaseUrl = getTierCardBaseUrl(selectedTier)
@@ -71,8 +57,15 @@ export const App = () => {
 
   const productImageUrl = composedCardUrl || tierCardBaseUrl
 
-  const handleBuyNow = () => {
-    setSelectedCardImageUrl(productImageUrl)
+  const handleBuyNow = async () => {
+    try {
+      // Re-compose at click time to guarantee animation uses the latest selected text/tier.
+      const latestUrl = await composeCardImage(tierCardBaseUrl, categoryLabel, tierLabel, selectedTier)
+      setSelectedCardImageUrl(latestUrl || productImageUrl)
+    } catch {
+      setSelectedCardImageUrl(productImageUrl)
+    }
+    setSelectedModelKey(currentModelKey)
     setShowHomePage(false)
   }
 
@@ -93,13 +86,13 @@ export const App = () => {
           onAddToCart={handleAddToCart}
         />
       ) : (
-        <CardAnimation cardImageUrl={selectedCardImageUrl} />
+        <CardAnimation cardImageUrl={selectedCardImageUrl} cardModelKey={selectedModelKey} />
       )}
     </div>
   )
 }
 
-function CardAnimation({ cardImageUrl = '/card.png' }) {
+function CardAnimation({ cardImageUrl = '/card.png', cardModelKey = 'default' }) {
   const containerRef = useRef(null)
   const pokedexRef = useRef(null)
   const videoRef = useRef(null)
@@ -613,6 +606,7 @@ function CardAnimation({ cardImageUrl = '/card.png' }) {
             
             <Suspense fallback={null}>
               <Card3D
+                key={cardModelKey}
                 scale={1.8}
                 position={[0, 0, 0]}
                 rotation={[0, 0, 0]}
