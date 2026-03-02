@@ -15,6 +15,7 @@ import { SafeCanvas } from './SafeCanvas'
 const CARD_APPEARANCE_START_BEFORE_END = 1.4
 const CARD_APPEARANCE_DURATION = 1.4
 const VIDEO_START_OFFSET_SEC = 0.6
+const VIDEO_FREEZE_HOLD_MS = 450
 
 const CARD_BASE = '/card.png'
 
@@ -34,6 +35,8 @@ function getTierCardBaseUrl(tierId) {
 
 export const App = () => {
   const [showHomePage, setShowHomePage] = useState(true)
+  const [showAnimationScene, setShowAnimationScene] = useState(false)
+  const [animationPlaybackEnabled, setAnimationPlaybackEnabled] = useState(false)
   const [selectedCategory, setSelectedCategory] = useState('baseball')
   const [selectedTier, setSelectedTier] = useState('bronze')
   const [composedCardUrl, setComposedCardUrl] = useState(null)
@@ -58,7 +61,7 @@ export const App = () => {
 
   const productImageUrl = composedCardUrl || tierCardBaseUrl
 
-  const handleBuyNow = async () => {
+  const prepareBuyNowScene = async () => {
     try {
       // Re-compose at click time to guarantee animation uses the latest selected text/tier.
       const latestUrl = await composeCardImage(tierCardBaseUrl, categoryLabel, tierLabel, selectedTier)
@@ -67,6 +70,12 @@ export const App = () => {
       setSelectedCardImageUrl(productImageUrl)
     }
     setSelectedModelKey(currentModelKey)
+    setAnimationPlaybackEnabled(false)
+    setShowAnimationScene(true)
+  }
+
+  const handleBuyNow = async () => {
+    setAnimationPlaybackEnabled(true)
     setShowHomePage(false)
   }
 
@@ -76,24 +85,30 @@ export const App = () => {
 
   return (
     <div className="animation-container">
-      {showHomePage ? (
+      {showAnimationScene && (
+        <CardAnimation
+          cardImageUrl={selectedCardImageUrl}
+          cardModelKey={selectedModelKey}
+          playbackEnabled={animationPlaybackEnabled}
+        />
+      )}
+      {showHomePage && (
         <HomePage
           selectedCategory={selectedCategory}
           selectedTier={selectedTier}
           onCategoryChange={setSelectedCategory}
           onTierChange={setSelectedTier}
           productImageUrl={productImageUrl}
+          onBuyNowPrepare={prepareBuyNowScene}
           onBuyNow={handleBuyNow}
           onAddToCart={handleAddToCart}
         />
-      ) : (
-        <CardAnimation cardImageUrl={selectedCardImageUrl} cardModelKey={selectedModelKey} />
       )}
     </div>
   )
 }
 
-function CardAnimation({ cardImageUrl = '/card.png', cardModelKey = 'default' }) {
+function CardAnimation({ cardImageUrl = '/card.png', cardModelKey = 'default', playbackEnabled = true }) {
   const containerRef = useRef(null)
   const pokedexRef = useRef(null)
   const videoRef = useRef(null)
@@ -120,6 +135,7 @@ function CardAnimation({ cardImageUrl = '/card.png', cardModelKey = 'default' })
   const [assetsReady, setAssetsReady] = useState(false)
   const [cardSlideComplete, setCardSlideComplete] = useState(false)
   const [videoPrimed, setVideoPrimed] = useState(false)
+  const [videoFramePrepared, setVideoFramePrepared] = useState(false)
 
   // Hide .outer-card after card disappearance animation (4s) so Pokédex can receive click/hover
   const OUTER_CARD_HIDE_DELAY_MS = 4000
@@ -190,7 +206,7 @@ function CardAnimation({ cardImageUrl = '/card.png', cardModelKey = 'default' })
     setVideoCurrentTime(video.currentTime)
 
     // If video is playing and we haven't started the timer yet
-    if (video.currentTime > 0 && !videoStarted) {
+    if (video.currentTime > 0 && !video.paused && !videoStarted) {
       setVideoStarted(true)
       // Show card 1 second after video starts playing
       setTimeout(() => {
@@ -204,9 +220,63 @@ function CardAnimation({ cardImageUrl = '/card.png', cardModelKey = 'default' })
     if (video && Number.isFinite(video.duration)) setVideoDuration(video.duration)
   }
 
-  // Start video playback only after all assets have finished loading
+  // Prime video frame immediately so user sees paused first frame (not solid color)
   useEffect(() => {
-    if (!assetsReady) return
+    const video = videoRef.current
+    if (!video) return
+
+    video.muted = true
+    video.playsInline = true
+    video.setAttribute('playsinline', '')
+    video.setAttribute('webkit-playsinline', '')
+    video.playbackRate = 1.2
+
+    const finishPriming = () => {
+      video.pause()
+      setVideoPrimed(true)
+      setVideoFramePrepared(true)
+    }
+
+    const primeFrameOnly = () => {
+      // If metadata is not ready yet, don't wait forever on `seeked`.
+      if (!Number.isFinite(video.duration) || video.duration <= 0) {
+        finishPriming()
+        return
+      }
+
+      const targetTime = video.duration > VIDEO_START_OFFSET_SEC ? VIDEO_START_OFFSET_SEC : 0
+      if (Math.abs(video.currentTime - targetTime) < 0.01) {
+        finishPriming()
+        return
+      }
+
+      const onSeeked = () => {
+        video.removeEventListener('seeked', onSeeked)
+        finishPriming()
+      }
+      video.addEventListener('seeked', onSeeked, { once: true })
+      video.currentTime = targetTime
+    }
+
+    if (video.readyState >= 2) {
+      primeFrameOnly()
+    } else {
+      const onCanPlay = () => {
+        video.removeEventListener('canplay', onCanPlay)
+        primeFrameOnly()
+      }
+      video.addEventListener('canplay', onCanPlay, { once: true })
+      const onLoadedMetadata = () => {
+        video.removeEventListener('loadedmetadata', onLoadedMetadata)
+        primeFrameOnly()
+      }
+      video.addEventListener('loadedmetadata', onLoadedMetadata, { once: true })
+    }
+  }, [])
+
+  // Start video playback after assets are ready and paused frame is visible
+  useEffect(() => {
+    if (!assetsReady || !videoFramePrepared || !playbackEnabled) return
     const video = videoRef.current
     if (!video) return
 
@@ -222,10 +292,13 @@ function CardAnimation({ cardImageUrl = '/card.png', cardModelKey = 'default' })
       }
     }
 
+    let playDelayTimer = null
+
     const primeAndPlay = () => {
       const playNow = () => {
-        setVideoPrimed(true)
-        video.play().catch((error) => {
+        video.pause()
+        playDelayTimer = setTimeout(() => {
+          video.play().catch((error) => {
           console.warn('Video autoplay failed:', error)
           const handleUserInteraction = () => {
             seekToStartOffset()
@@ -241,7 +314,8 @@ function CardAnimation({ cardImageUrl = '/card.png', cardModelKey = 'default' })
           document.addEventListener('touchstart', handleUserInteraction, true)
           document.addEventListener('mousedown', handleUserInteraction, true)
           window.addEventListener('focus', handleUserInteraction)
-        })
+          })
+        }, VIDEO_FREEZE_HOLD_MS)
       }
 
       if (Number.isFinite(video.duration) && video.duration > VIDEO_START_OFFSET_SEC) {
@@ -268,7 +342,7 @@ function CardAnimation({ cardImageUrl = '/card.png', cardModelKey = 'default' })
     }
 
     const fallbackTimer = setTimeout(() => {
-      if (!videoStarted && video.currentTime > 0) {
+      if (!videoStarted && video.currentTime > 0 && !video.paused) {
         setVideoStarted(true)
         setTimeout(() => setShowCard(true), 1000)
       }
@@ -283,9 +357,10 @@ function CardAnimation({ cardImageUrl = '/card.png', cardModelKey = 'default' })
 
     return () => {
       clearTimeout(fallbackTimer)
+      if (playDelayTimer) clearTimeout(playDelayTimer)
       video.removeEventListener('loadedmetadata', onMeta)
     }
-  }, [assetsReady, videoStarted])
+  }, [assetsReady, videoStarted, videoFramePrepared, playbackEnabled])
 
   // Smooth Grail card progress when in the end window (sync with video time)
   useEffect(() => {
@@ -510,11 +585,14 @@ function CardAnimation({ cardImageUrl = '/card.png', cardModelKey = 'default' })
           width: '100vw',
           height: '100vh',
           objectFit: 'cover',
-          zIndex: showCard ? 0 : 10,
+          zIndex: playbackEnabled ? (showCard ? 0 : 10) : -10,
           opacity: videoPrimed ? 1 : 0,
+          pointerEvents: 'none',
         }}
       />
 
+      {playbackEnabled && (
+        <>
       {/* Grail Vaults card - mounted from the start so image is in DOM; visibility controlled by props */}
       <div
         className="grail-card-fixed-layer"
@@ -687,6 +765,8 @@ function CardAnimation({ cardImageUrl = '/card.png', cardModelKey = 'default' })
         </div>
       )}
       </div>
+      )}
+        </>
       )}
         </>
       )}

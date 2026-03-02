@@ -1,8 +1,8 @@
 import * as THREE from 'three'
-import { useLoader, useFrame } from '@react-three/fiber'
+import { useLoader, useFrame, useThree } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import { GLTFLoaderWithDraco } from './gltfLoaderWithDraco'
-import { useMemo, useEffect, useRef, useState } from 'react'
+import { forwardRef, useMemo, useEffect, useRef, useState, useImperativeHandle } from 'react'
 import { CleanR3FChildren } from './r3fInstrumentationStrip'
 
 // Perlin 3D noise (from Codrops Noise.js)
@@ -156,9 +156,13 @@ const UV_OFFSET_X = (1 - UV_SCALE_X) * 0.5
 const UV_SCALE_Y = 0.99
 // Keep centered after scaling. (Default formula: (1 - UV_SCALE_Y) * 0.5)
 const UV_OFFSET_Y = (1 - UV_SCALE_Y) * 0.5
+const PURCHASE_CENTER_SCALE = 1.0
+const PURCHASE_RECENTER_DURATION = 1.5
+const PURCHASE_EXIT_DURATION = 1.2
 
-export function Card3DPreview({ cardImageUrl = '/card.png' }) {
+export const Card3DPreview = forwardRef(function Card3DPreview({ cardImageUrl = '/card.png' }, ref) {
   const gltf = useLoader(GLTFLoaderWithDraco, '/card_preview.glb')
+  const { camera } = useThree()
 
   const previewMesh = useMemo(() => {
     let firstMesh = null
@@ -173,8 +177,14 @@ export function Card3DPreview({ cardImageUrl = '/card.png' }) {
     const geo = previewMesh.geometry.clone()
     if (!geo.attributes?.position) return null
     if (!geo.attributes?.normal) geo.computeVertexNormals()
-    if (!geo.attributes?.uv) {
+    // Normalize pivot to exact mesh center so it renders centered in view.
+    geo.computeBoundingBox()
+    if (geo.boundingBox) {
+      const center = geo.boundingBox.getCenter(new THREE.Vector3())
+      geo.translate(-center.x, -center.y, -center.z)
       geo.computeBoundingBox()
+    }
+    if (!geo.attributes?.uv) {
       const bbox = geo.boundingBox
       const pos = geo.attributes.position
       const uvArray = new Float32Array(pos.count * 2)
@@ -206,6 +216,10 @@ export function Card3DPreview({ cardImageUrl = '/card.png' }) {
   const animatingRef = useRef(false)
   const progressRef = useRef(1)
   const [texReady, setTexReady] = useState(false)
+  const controlsRef = useRef(null)
+  const modelGroupRef = useRef(null)
+  const purchaseSequenceRef = useRef(null)
+  const defaultsRef = useRef(null)
 
   useEffect(() => {
     let cancelled = false
@@ -236,6 +250,14 @@ export function Card3DPreview({ cardImageUrl = '/card.png' }) {
   }, [cardImageUrl])
 
   useFrame((_, delta) => {
+    if (!defaultsRef.current && controlsRef.current) {
+      defaultsRef.current = {
+        cameraPos: camera.position.clone(),
+        cameraQuat: camera.quaternion.clone(),
+        target: controlsRef.current.target.clone(),
+      }
+    }
+
     const uniforms = uniformsRef.current
     uniforms.u_time.value += delta
     if (animatingRef.current) {
@@ -245,16 +267,99 @@ export function Card3DPreview({ cardImageUrl = '/card.png' }) {
       uniforms.u_progress.value = p
       if (p >= 1) animatingRef.current = false
     }
+    // Purchase transition for preview model:
+    // `recenter`: 0-1.5s smoothly normalize to default center view.
+    // `exit`: spin while shrinking to 0.
+    if (purchaseSequenceRef.current && modelGroupRef.current) {
+      const seq = purchaseSequenceRef.current
+      seq.elapsed += delta
+      const t = seq.elapsed
+      if (seq.phase === 'recenter' && t <= PURCHASE_RECENTER_DURATION) {
+        const p = t / PURCHASE_RECENTER_DURATION
+        const eased = 1 - Math.pow(1 - p, 3)
+        if (seq.startCameraPos && seq.defaultCameraPos) {
+          camera.position.lerpVectors(seq.startCameraPos, seq.defaultCameraPos, eased)
+          camera.quaternion.copy(seq.startCameraQuat).slerp(seq.defaultCameraQuat, eased)
+        }
+        if (controlsRef.current && seq.startTarget && seq.defaultTarget) {
+          controlsRef.current.target.lerpVectors(seq.startTarget, seq.defaultTarget, eased)
+          controlsRef.current.update()
+        }
+        modelGroupRef.current.position.set(
+          THREE.MathUtils.lerp(seq.startPos.x, 0, eased),
+          THREE.MathUtils.lerp(seq.startPos.y, 0, eased),
+          THREE.MathUtils.lerp(seq.startPos.z, 0, eased)
+        )
+        modelGroupRef.current.rotation.set(
+          THREE.MathUtils.lerp(seq.startRot.x, 0, eased),
+          THREE.MathUtils.lerp(seq.startRot.y, 0, eased),
+          THREE.MathUtils.lerp(seq.startRot.z, 0, eased)
+        )
+        const s = THREE.MathUtils.lerp(seq.startScale, PURCHASE_CENTER_SCALE, eased)
+        modelGroupRef.current.scale.setScalar(s)
+      } else if (seq.phase === 'recenter' && t > PURCHASE_RECENTER_DURATION) {
+        if (seq.defaultCameraPos && seq.defaultCameraQuat) {
+          camera.position.copy(seq.defaultCameraPos)
+          camera.quaternion.copy(seq.defaultCameraQuat)
+        }
+        if (controlsRef.current && seq.defaultTarget) {
+          controlsRef.current.target.copy(seq.defaultTarget)
+          controlsRef.current.update()
+        }
+        modelGroupRef.current.position.set(0, 0, 0)
+        modelGroupRef.current.rotation.set(0, 0, 0)
+        modelGroupRef.current.scale.setScalar(PURCHASE_CENTER_SCALE)
+      } else if (seq.phase === 'exit' && t <= PURCHASE_EXIT_DURATION) {
+        const p = t / PURCHASE_EXIT_DURATION
+        const eased = 1 - Math.pow(1 - p, 3)
+        modelGroupRef.current.position.set(0, 0, 0)
+        modelGroupRef.current.rotation.y += delta * 9.2
+        const s = THREE.MathUtils.lerp(PURCHASE_CENTER_SCALE, 0, eased)
+        modelGroupRef.current.scale.setScalar(Math.max(0, s))
+      } else if (seq.phase === 'exit' && t > PURCHASE_EXIT_DURATION) {
+        modelGroupRef.current.scale.setScalar(0)
+      }
+    }
   })
+
+  useImperativeHandle(ref, () => ({
+    startPurchaseTransition() {
+      if (controlsRef.current) {
+        controlsRef.current.enabled = false
+      }
+      const defaults = defaultsRef.current
+      const g = modelGroupRef.current
+      purchaseSequenceRef.current = {
+        phase: 'recenter',
+        elapsed: 0,
+        startPos: g ? g.position.clone() : new THREE.Vector3(0, 0, 0),
+        startRot: g ? g.rotation.clone() : new THREE.Euler(0, 0, 0),
+        startScale: g ? g.scale.x : 2,
+        startCameraPos: camera.position.clone(),
+        startCameraQuat: camera.quaternion.clone(),
+        startTarget: controlsRef.current?.target?.clone() || new THREE.Vector3(0, 0, 0),
+        defaultCameraPos: defaults?.cameraPos?.clone() || new THREE.Vector3(0, 0, 6),
+        defaultCameraQuat: defaults?.cameraQuat?.clone() || new THREE.Quaternion(),
+        defaultTarget: defaults?.target?.clone() || new THREE.Vector3(0, 0, 0),
+      }
+    },
+    startExitTransition() {
+      purchaseSequenceRef.current = {
+        phase: 'exit',
+        elapsed: 0,
+      }
+    },
+  }), [])
 
   if (!previewGeometry || !texReady) return null
 
   return (
     <CleanR3FChildren>
-      <mesh geometry={previewGeometry} position={[0, 0, 0]} rotation={[0, 0, 0]} scale={2}>
-        <shaderMaterial
-          uniforms={uniformsRef.current}
-          vertexShader={/* glsl */`
+      <group ref={modelGroupRef} position={[0, 0, 0]} rotation={[0, 0, 0]} scale={2}>
+        <mesh geometry={previewGeometry}>
+          <shaderMaterial
+            uniforms={uniformsRef.current}
+            vertexShader={/* glsl */`
             varying vec2 vUv;
             varying vec3 vLocalNormal;
             void main() {
@@ -262,8 +367,8 @@ export function Card3DPreview({ cardImageUrl = '/card.png' }) {
               vLocalNormal = normalize(normal);
               gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
             }
-          `}
-          fragmentShader={/* glsl */`
+            `}
+            fragmentShader={/* glsl */`
             uniform float u_time;
             uniform sampler2D u_prevMap;
             uniform sampler2D u_nextMap;
@@ -301,12 +406,14 @@ export function Card3DPreview({ cardImageUrl = '/card.png' }) {
               vec3 srgb = pow(max(rgb, vec3(0.0)), vec3(1.0 / 2.2));
               gl_FragColor = vec4(srgb, 1.0);
             }
-          `}
-          side={THREE.DoubleSide}
-          toneMapped={false}
-        />
-      </mesh>
+            `}
+            side={THREE.DoubleSide}
+            toneMapped={false}
+          />
+        </mesh>
+      </group>
       <OrbitControls
+        ref={controlsRef}
         enablePan={false}
         enableZoom={true}
         minDistance={4}
@@ -315,4 +422,4 @@ export function Card3DPreview({ cardImageUrl = '/card.png' }) {
       />
     </CleanR3FChildren>
   )
-}
+})
