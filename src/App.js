@@ -76,6 +76,9 @@ export const App = () => {
 
   const handleBuyNow = async () => {
     setAnimationPlaybackEnabled(true)
+  }
+
+  const handleBuyNowComplete = async () => {
     setShowHomePage(false)
   }
 
@@ -101,6 +104,7 @@ export const App = () => {
           productImageUrl={productImageUrl}
           onBuyNowPrepare={prepareBuyNowScene}
           onBuyNow={handleBuyNow}
+          onBuyNowComplete={handleBuyNowComplete}
           onAddToCart={handleAddToCart}
         />
       )}

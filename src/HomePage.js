@@ -28,6 +28,7 @@ export function HomePage({
   productImageUrl,
   onBuyNowPrepare,
   onBuyNow,
+  onBuyNowComplete,
   onAddToCart,
 }) {
   const wrapRef = useRef(null)
@@ -36,6 +37,8 @@ export function HomePage({
   const [isWrapExpanded, setIsWrapExpanded] = useState(false)
   const [isUiFaded, setIsUiFaded] = useState(false)
   const [isWrapBackgroundFaded, setIsWrapBackgroundFaded] = useState(false)
+  const [isFirstFrameVisible, setIsFirstFrameVisible] = useState(false)
+  const [isFirstFrameFading, setIsFirstFrameFading] = useState(false)
   const [wrapTransitionStyle, setWrapTransitionStyle] = useState(null)
 
   const category = CATEGORIES.find((c) => c.id === selectedCategory) || CATEGORIES[0]
@@ -74,12 +77,23 @@ export function HomePage({
     await wait(1500)
     setIsUiFaded(true)
     setIsWrapBackgroundFaded(true)
+    setIsFirstFrameVisible(true)
 
     await wait(500)
     previewRef.current?.startExitTransition?.()
 
-    await wait(800)
+    // Start animation scene playback behind the first-frame overlay.
     await Promise.resolve(onBuyNow?.())
+
+    // Keep first_frame visible while video is already playing behind it.
+    await wait(1000)
+    setIsFirstFrameFading(true)
+
+    await wait(320)
+    setIsFirstFrameVisible(false)
+
+    await wait(80)
+    await Promise.resolve(onBuyNowComplete?.())
   }
 
   return (
@@ -93,6 +107,14 @@ export function HomePage({
             style={wrapTransitionStyle || undefined}
             className={`home-product-image-wrap home-product-preview-3d ${isPurchaseTransitioning ? 'purchase-transition-active' : ''} ${isWrapExpanded ? 'purchase-transition-expanded' : ''} ${isWrapBackgroundFaded ? 'purchase-transition-bg-fade' : ''}`}
           >
+            {isFirstFrameVisible && (
+              <img
+                src="/first_frame.png"
+                alt=""
+                className={`home-first-frame-overlay ${isFirstFrameFading ? 'fade-out' : ''}`}
+                aria-hidden="true"
+              />
+            )}
             <Suspense fallback={<div className="home-product-preview-fallback">Loading…</div>}>
               <SafeCanvas
                 camera={{ position: [0, 0, 6], fov: 45 }}
